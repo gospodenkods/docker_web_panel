@@ -58,6 +58,47 @@ ssh -L 8080:127.0.0.1:8080 root@SERVER_IP
 После подключения откройте `http://127.0.0.1:8080`. Логин по умолчанию:
 `admin`.
 
+### Публичный HTTPS через Nginx
+
+Готовый пример для `devops.dadway.ru` и HTTPS-порта `8090` находится в
+[`deploy/nginx-devops.dadway.ru.conf`](deploy/nginx-devops.dadway.ru.conf).
+Сам DockPilot при такой схеме остаётся на `127.0.0.1:8080`.
+
+```bash
+sudo apt install -y nginx certbot
+sudo install -d -m 755 /var/www/letsencrypt
+```
+
+Сначала настройте HTTP virtual host на порту 80 с каталогом
+`/var/www/letsencrypt` для ACME challenge, затем выпустите сертификат:
+
+```bash
+sudo certbot certonly --webroot \
+  -w /var/www/letsencrypt \
+  -d devops.dadway.ru \
+  --agree-tos --register-unsafely-without-email --non-interactive
+```
+
+Установите готовую конфигурацию:
+
+```bash
+sudo cp deploy/nginx-devops.dadway.ru.conf /etc/nginx/sites-available/dockpilot
+sudo ln -sfn /etc/nginx/sites-available/dockpilot /etc/nginx/sites-enabled/dockpilot
+sudo rm -f /etc/nginx/sites-enabled/default
+sudo nginx -t
+sudo systemctl reload nginx
+```
+
+За доверенным reverse proxy установите в `.env`:
+
+```dotenv
+TRUST_PROXY_HEADERS=true
+```
+
+Nginx должен перезаписывать `X-Forwarded-For` значением `$remote_addr`, как в
+примере. Использование `$proxy_add_x_forwarded_for` позволит клиенту подменить
+адрес, применяемый для ограничения попыток входа.
+
 ### Ручная установка
 
 ```bash
