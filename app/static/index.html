@@ -1,0 +1,45 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>DockPilot</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+<div id="login" class="login-wrap">
+  <form class="login-card" onsubmit="doLogin(event)">
+    <div class="brand">⬡ DockPilot</div>
+    <h1>Управление Docker</h1>
+    <input id="username" placeholder="Логин" value="admin" autocomplete="username">
+    <input id="password" type="password" placeholder="Пароль" autocomplete="current-password">
+    <button type="submit">Войти</button>
+    <div id="loginError" class="error"></div>
+  </form>
+</div>
+
+<div id="app" class="app hidden">
+  <aside>
+    <div class="brand">⬡ DockPilot</div>
+    <nav>
+      <button onclick="showPage('dashboard')">Обзор</button>
+      <button onclick="showPage('containers')">Контейнеры</button>
+      <button onclick="showPage('images')">Образы</button>
+      <button onclick="showPage('networks')">Сети</button>
+      <button onclick="showPage('quick')">Быстрый запуск</button>
+    </nav>
+    <button class="logout" onclick="logout()">Выйти</button>
+  </aside>
+  <main>
+    <header>
+      <div><b id="pageTitle">Обзор</b><span id="engineBadge"> Docker</span></div>
+      <button onclick="refreshCurrent()">↻ Обновить</button>
+    </header>
+    <section id="content"></section>
+  </main>
+</div>
+
+<div id="modal" class="modal hidden"><div class="modal-card"><button class="close" onclick="closeModal()">×</button><div id="modalBody"></div></div></div>
+<script src="/static/app.js"></script>
+</body>
+</html>
