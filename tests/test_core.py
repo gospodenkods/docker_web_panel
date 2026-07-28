@@ -75,6 +75,39 @@ class CoreTests(unittest.TestCase):
         result = main.dashboard("admin")
         self.assertEqual(result["counts"], {"containers":2,"running":1,"stopped":1,"images":1,"networks":2})
 
+    @patch("app.main.shutil.disk_usage")
+    @patch("app.main.client")
+    @patch("app.main.psutil.cpu_percent")
+    def test_metrics(self, mocked_cpu, mocked_client, mocked_disk):
+        mocked_cpu.return_value = 12.5
+        mocked_disk.return_value = MagicMock(total=1000, used=400, free=600)
+        mocked_client.return_value.containers.list.return_value = [MagicMock(id="one")]
+        mocked_client.return_value.api.stats.return_value = {
+            "networks": {
+                "eth0": {"tx_bytes": 200, "rx_bytes": 300},
+            }
+        }
+        result = main.metrics("admin")
+        self.assertEqual(result["cpu_percent"], 12.5)
+        self.assertEqual(result["network"], {"bytes_sent": 200, "bytes_recv": 300})
+        self.assertEqual(result["disk"]["percent"], 40.0)
+
+    @patch("app.main.client")
+    def test_container_environment(self, mocked_client):
+        obj = mocked_client.return_value.containers.get.return_value
+        obj.name = "/web"
+        obj.attrs = {"Config": {"Env": ["TOKEN=secret", "EMPTY=", "FLAG"]}}
+        result = main.container_environment("abc", "admin")
+        self.assertEqual(result["container"], "web")
+        self.assertEqual(
+            result["variables"],
+            [
+                {"key": "EMPTY", "value": ""},
+                {"key": "FLAG", "value": ""},
+                {"key": "TOKEN", "value": "secret"},
+            ],
+        )
+
     @patch("app.main.client")
     def test_create_container_pulls_missing_image(self, mocked_client):
         c = mocked_client.return_value
