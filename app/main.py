@@ -1,11 +1,13 @@
 import os
 import secrets
+import shutil
 import time
 import threading
 from datetime import datetime, timedelta, timezone
 from typing import Any, Literal
 
 import docker
+import psutil
 from docker.errors import APIError, DockerException, ImageNotFound, NotFound
 from pathlib import Path
 
@@ -20,7 +22,7 @@ from pydantic import BaseModel, Field, model_validator
 BASE_DIR = Path(__file__).resolve().parent
 STATIC_DIR = BASE_DIR / "static"
 
-app = FastAPI(title="DockPilot", version="1.0.6")
+app = FastAPI(title="DockPilot", version="1.1.0")
 app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
 
 security = HTTPBearer(auto_error=False)
@@ -245,6 +247,38 @@ def dashboard(_: str = Depends(verify_token)):
     except Exception as exc:
         api_error(exc)
 
+@app.get("/api/metrics")
+def metrics(_: str = Depends(verify_token)):
+    try:
+        c = client()
+        bytes_sent = 0
+        bytes_recv = 0
+        for container in c.containers.list(filters={"status": "running"}):
+            try:
+                stats = c.api.stats(container.id, stream=False, one_shot=True)
+                for interface in (stats.get("networks") or {}).values():
+                    bytes_sent += interface.get("tx_bytes", 0)
+                    bytes_recv += interface.get("rx_bytes", 0)
+            except (DockerException, KeyError, TypeError):
+                continue
+        disk = shutil.disk_usage("/")
+        return {
+            "timestamp": int(time.time() * 1000),
+            "cpu_percent": round(psutil.cpu_percent(interval=0.1), 2),
+            "network": {
+                "bytes_sent": bytes_sent,
+                "bytes_recv": bytes_recv,
+            },
+            "disk": {
+                "total": disk.total,
+                "used": disk.used,
+                "free": disk.free,
+                "percent": round((disk.used / disk.total * 100), 2) if disk.total else 0,
+            },
+        }
+    except Exception as exc:
+        raise HTTPException(503, f"Метрики хоста недоступны: {exc}")
+
 @app.get("/api/templates")
 def templates(_: str = Depends(verify_token)):
     return TEMPLATES
@@ -326,6 +360,25 @@ def container_logs(container_id: str, tail: int = 300, _: str = Depends(verify_t
     try:
         obj = c.containers.get(container_id)
         return {"logs": obj.logs(tail=max(1, min(tail, 2000)), timestamps=True).decode("utf-8", "replace")}
+    except Exception as exc:
+        api_error(exc)
+
+@app.get("/api/containers/{container_id}/environment")
+def container_environment(container_id: str, _: str = Depends(verify_token)):
+    c = client()
+    try:
+        obj = c.containers.get(container_id)
+        obj.reload()
+        variables = []
+        for entry in obj.attrs.get("Config", {}).get("Env") or []:
+            key, separator, value = entry.partition("=")
+            variables.append({"key": key, "value": value if separator else ""})
+        variables.sort(key=lambda item: item["key"].lower())
+        return {
+            "container": clean_name(obj.name),
+            "variables": variables,
+            "warning": "Переменные окружения могут содержать пароли, токены и другие секреты.",
+        }
     except Exception as exc:
         api_error(exc)
 
