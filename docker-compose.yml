@@ -13,9 +13,11 @@ services:
       LOGIN_MAX_ATTEMPTS: "${LOGIN_MAX_ATTEMPTS:-5}"
       LOGIN_WINDOW_SECONDS: "${LOGIN_WINDOW_SECONDS:-300}"
       TRUST_PROXY_HEADERS: "${TRUST_PROXY_HEADERS:-false}"
+      BACKUP_DIR: "/backups"
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
       - dockpilot_data:/app/data
+      - dockpilot_backups:/backups
     security_opt:
       - no-new-privileges:true
     read_only: true
@@ -26,6 +28,7 @@ services:
 
 volumes:
   dockpilot_data:
+  dockpilot_backups:
 
 networks:
   dockpilot_internal:

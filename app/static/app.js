@@ -10,7 +10,7 @@ async function api(path,opt={}){
 async function doLogin(e){e.preventDefault();try{const d=await api('/api/login',{method:'POST',body:JSON.stringify({username:$('#username').value,password:$('#password').value})});token=d.access_token;localStorage.setItem('dockpilot_token',token);boot()}catch(e){$('#loginError').textContent=e.message}}
 function logout(){token='';localStorage.removeItem('dockpilot_token');$('#app').classList.add('hidden');$('#login').classList.remove('hidden')}
 function boot(){if(!token)return logout();$('#login').classList.add('hidden');$('#app').classList.remove('hidden');showPage('dashboard')}
-function showPage(p){if(dashboardTimer){clearInterval(dashboardTimer);dashboardTimer=null}currentPage=p;const names={dashboard:'Обзор',containers:'Контейнеры',images:'Образы',networks:'Сети',quick:'Быстрый запуск'};$('#pageTitle').textContent=names[p];window['load_'+p]()}
+function showPage(p){if(dashboardTimer){clearInterval(dashboardTimer);dashboardTimer=null}currentPage=p;const names={dashboard:'Обзор',containers:'Контейнеры',images:'Образы',backups:'Резервные копии',networks:'Сети',quick:'Быстрый запуск'};$('#pageTitle').textContent=names[p];window['load_'+p]()}
 function refreshCurrent(){showPage(currentPage)}
 function modal(html){$('#modalBody').innerHTML=html;$('#modal').classList.remove('hidden')}
 function closeModal(){$('#modal').classList.add('hidden')}
@@ -51,6 +51,34 @@ async function load_images(){const a=await api('/api/images');$('#content').inne
 function pullDialog(){modal(`<h2>Скачать образ</h2><form onsubmit="pullImage(event)"><input id=pull_name placeholder="Например: nginx:alpine" required><button>Скачать</button></form>`)}
 async function pullImage(e){e.preventDefault();try{await api('/api/images/pull',{method:'POST',body:JSON.stringify({image:pull_name.value})});closeModal();load_images()}catch(e){toast(e.message)}}
 async function removeImage(id){if(!confirm('Удалить образ?'))return;try{await api(`/api/images/${encodeURIComponent(id)}?force=true`,{method:'DELETE'});load_images()}catch(e){toast(e.message)}}
+async function load_backups(){
+ const [d,containers]=await Promise.all([api('/api/backups'),api('/api/containers')]),s=d.settings,running=containers.filter(x=>x.status==='running');
+ const next=s.next_run?new Date(s.next_run*1000).toLocaleString():'—',last=s.last_run?new Date(s.last_run*1000).toLocaleString():'—';
+ const history=d.history.filter((x,i,a)=>a.findIndex(y=>y.id===x.id)===i);
+ $('#content').innerHTML=`<div class=grid>
+ <div class=panel><h3>Ручное копирование</h3><p class=muted>Создаётся переносимый снимок Docker-образа с текущим writable layer контейнера.</p>
+ <div class=backup-list>${running.map(x=>`<label><input class=backup-container type=checkbox value="${esc(x.id)}" checked> <b>${esc(x.name)}</b> <span class=muted>${esc(x.image||'')}</span></label>`).join('')||'<p>Нет запущенных контейнеров</p>'}</div>
+ <button onclick="runBackup()" ${s.running||!running.length?'disabled':''}>${s.running?'Копирование выполняется…':'Создать копию'}</button></div>
+ <div class=panel><h3>Расписание и хранилище</h3><form class=form-grid onsubmit="saveBackupSettings(event)">
+ <label><input id=b_enabled type=checkbox style="width:auto" ${s.enabled?'checked':''}> Включить расписание</label>
+ <label>Период, часов<input id=b_interval type=number min=1 max=8760 value="${Number(s.interval_hours)||24}"></label>
+ <label>Хранилище<select id=b_target onchange="toggleWebdavFields()"><option value=local ${s.target==='local'?'selected':''}>Подключённый том / локально</option><option value=webdav ${s.target==='webdav'?'selected':''}>WebDAV</option></select></label>
+ <label>Подкаталог в /backups<input id=b_local value="${esc(s.local_subdir||'')}" placeholder="Например: daily"></label>
+ <div id=webdavFields class="full form-grid">
+ <input class=full id=b_webdav_url value="${esc(s.webdav_url||'')}" placeholder="https://cloud.example.com/remote.php/dav/files/user">
+ <input id=b_webdav_username value="${esc(s.webdav_username||'')}" placeholder="WebDAV логин">
+ <input id=b_webdav_password type=password placeholder="${s.webdav_password_set?'Пароль сохранён (оставьте пустым)':'WebDAV пароль'}">
+ <input id=b_webdav_path value="${esc(s.webdav_path||'dockpilot')}" placeholder="Каталог: dockpilot">
+ <button type=button class=secondary onclick="testWebdav()">Проверить WebDAV</button></div>
+ <button class=full>Сохранить настройки</button></form><p class=muted>Последний запуск: ${last}<br>Следующий: ${next}</p></div></div>
+ <div class=panel style="margin-top:16px"><h3>История</h3><table><thead><tr><th>Время</th><th>Тип / хранилище</th><th>Статус</th><th>Файлы</th></tr></thead><tbody>${history.map(x=>`<tr><td>${esc(new Date(x.started_at).toLocaleString())}</td><td>${x.reason==='schedule'?'По расписанию':'Вручную'} / ${esc(x.target)}</td><td><span class="status ${x.status}">${esc(x.status)}</span>${x.error?`<br><span class=error>${esc(x.error)}</span>`:''}</td><td>${(x.files||[]).map(f=>`${esc(f.container)} (${f.size?fmtBytes(f.size):'WebDAV'})`).join('<br>')||'—'}</td></tr>`).join('')||'<tr><td colspan=4>Копий пока нет</td></tr>'}</tbody></table></div>`;
+ toggleWebdavFields();
+}
+function backupPayload(){return{enabled:b_enabled.checked,interval_hours:Number(b_interval.value),target:b_target.value,local_subdir:b_local.value,webdav_url:b_webdav_url.value,webdav_username:b_webdav_username.value,webdav_password:b_webdav_password.value||null,webdav_path:b_webdav_path.value}}
+function toggleWebdavFields(){if($('#webdavFields'))$('#webdavFields').classList.toggle('hidden',$('#b_target').value!=='webdav')}
+async function saveBackupSettings(e){e.preventDefault();try{await api('/api/backups/settings',{method:'PUT',body:JSON.stringify(backupPayload())});toast('Настройки сохранены');load_backups()}catch(e){toast(e.message)}}
+async function testWebdav(){try{const p=backupPayload();await api('/api/backups/webdav/test',{method:'POST',body:JSON.stringify(p)});toast('WebDAV доступен')}catch(e){toast(e.message)}}
+async function runBackup(){const ids=[...document.querySelectorAll('.backup-container:checked')].map(x=>x.value);if(!ids.length)return toast('Выберите контейнеры');try{await api('/api/backups/run',{method:'POST',body:JSON.stringify({container_ids:ids})});toast('Резервное копирование запущено');setTimeout(load_backups,1000)}catch(e){toast(e.message)}}
 async function load_networks(){const a=await api('/api/networks');$('#content').innerHTML=`<div class=toolbar><button onclick="networkDialog()">+ Создать сеть</button><button class=secondary onclick="prune('networks')">Очистить неиспользуемые</button></div><table><thead><tr><th>Имя</th><th>Драйвер</th><th>Параметры</th><th>Контейнеры</th><th></th></tr></thead><tbody>${a.map(x=>`<tr><td><b>${esc(x.name)}</b><br><span class=muted>${esc(x.id)}</span></td><td>${esc(x.driver||'')}</td><td>${x.internal?'internal ':''}${x.attachable?'attachable':''}<br><span class=muted>${x.subnets.map(s=>esc(s.Subnet||'')).join(', ')}</span></td><td>${x.containers.length}</td><td><button class=danger onclick="removeNetwork('${x.id}')">Удалить</button></td></tr>`).join('')}</tbody></table>`}
 function networkDialog(){modal(`<h2>Новая сеть</h2><form class=form-grid onsubmit="createNetwork(event)"><input id=n_name placeholder="Имя" required><select id=n_driver><option value="bridge">bridge</option></select><input id=n_subnet placeholder="Subnet: 172.30.0.0/16"><input id=n_gateway placeholder="Gateway: 172.30.0.1"><label><input id=n_internal type=checkbox style="width:auto"> Internal</label><button class=full>Создать</button></form>`)}
 async function createNetwork(e){e.preventDefault();try{await api('/api/networks',{method:'POST',body:JSON.stringify({name:n_name.value,driver:n_driver.value,subnet:n_subnet.value||null,gateway:n_gateway.value||null,internal:n_internal.checked})});closeModal();load_networks()}catch(e){toast(e.message)}}

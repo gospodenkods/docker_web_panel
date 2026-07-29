@@ -8,6 +8,7 @@ from typing import Any, Literal
 
 import docker
 import psutil
+import requests
 from docker.errors import APIError, DockerException, ImageNotFound, NotFound
 from pathlib import Path
 
@@ -18,11 +19,12 @@ from fastapi.staticfiles import StaticFiles
 from jose import JWTError, jwt
 from passlib.context import CryptContext
 from pydantic import BaseModel, Field, model_validator
+from app import backups
 
 BASE_DIR = Path(__file__).resolve().parent
 STATIC_DIR = BASE_DIR / "static"
 
-app = FastAPI(title="DockPilot", version="1.1.0")
+app = FastAPI(title="DockPilot", version="1.2.0")
 app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
 
 security = HTTPBearer(auto_error=False)
@@ -141,6 +143,24 @@ class ImagePull(BaseModel):
 class QuickDeploy(BaseModel):
     template: str = Field(min_length=1, max_length=64, pattern=r"^[a-z0-9][a-z0-9_.-]*$")
     name: str | None = Field(default=None, min_length=1, max_length=128, pattern=r"^[a-zA-Z0-9][a-zA-Z0-9_.-]*$")
+
+class BackupSettings(BaseModel):
+    enabled: bool = False
+    interval_hours: int = Field(default=24, ge=1, le=8760)
+    target: Literal["local", "webdav"] = "local"
+    local_subdir: str = Field(default="", max_length=255)
+    webdav_url: str = Field(default="", max_length=2048)
+    webdav_username: str = Field(default="", max_length=255)
+    webdav_password: str | None = Field(default=None, max_length=1024)
+    webdav_path: str = Field(default="dockpilot", max_length=255)
+
+class BackupRun(BaseModel):
+    container_ids: list[str] = Field(default_factory=list, max_length=100)
+
+class WebDavTest(BaseModel):
+    webdav_url: str = Field(min_length=1, max_length=2048)
+    webdav_username: str = Field(default="", max_length=255)
+    webdav_password: str | None = Field(default=None, max_length=1024)
 
 @app.middleware("http")
 async def security_headers(request, call_next):
@@ -555,3 +575,50 @@ def prune(payload: dict[str, Any], _: str = Depends(verify_token)):
         raise HTTPException(400, "Недопустимый тип очистки")
     except Exception as exc:
         api_error(exc)
+
+@app.get("/api/backups")
+def backup_overview(_: str = Depends(verify_token)):
+    return {
+        "settings": backups.load_settings(),
+        "history": backups.history(),
+    }
+
+@app.put("/api/backups/settings")
+def backup_settings(data: BackupSettings, _: str = Depends(verify_token)):
+    try:
+        return backups.save_settings(data.model_dump())
+    except ValueError as exc:
+        raise HTTPException(400, str(exc))
+
+@app.post("/api/backups/webdav/test")
+def backup_webdav_test(data: WebDavTest, _: str = Depends(verify_token)):
+    current = backups.load_settings(include_password=True)
+    values = data.model_dump()
+    if not values.get("webdav_password"):
+        values["webdav_password"] = current.get("webdav_password", "")
+    try:
+        return backups.test_webdav(values)
+    except (ValueError, requests.RequestException) as exc:
+        raise HTTPException(400, str(exc))
+
+@app.post("/api/backups/run", status_code=202)
+def backup_run(data: BackupRun, _: str = Depends(verify_token)):
+    if backups.load_settings().get("running"):
+        raise HTTPException(409, "Резервное копирование уже выполняется")
+    threading.Thread(
+        target=_run_backup_background,
+        args=(data.container_ids,),
+        name="dockpilot-manual-backup",
+        daemon=True,
+    ).start()
+    return {"ok": True, "message": "Резервное копирование запущено"}
+
+def _run_backup_background(container_ids: list[str]) -> None:
+    try:
+        backups.run_backup(client(), container_ids=container_ids, reason="manual")
+    except Exception:
+        pass
+
+@app.on_event("startup")
+def start_backup_scheduler():
+    backups.start_scheduler(client)
