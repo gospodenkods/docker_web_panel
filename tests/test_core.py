@@ -1,5 +1,6 @@
 import os
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -10,6 +11,7 @@ os.environ.setdefault("JWT_SECRET", "test-secret-at-least-long-enough")
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 from app import main
+from app import backups
 
 
 class CoreTests(unittest.TestCase):
@@ -173,6 +175,60 @@ class CoreTests(unittest.TestCase):
             for binding in (cfg.get("ports") or {}).values():
                 self.assertIsInstance(binding, tuple)
                 self.assertEqual(binding[0], "127.0.0.1")
+
+    def test_backup_settings_hide_webdav_password(self):
+        with tempfile.TemporaryDirectory() as directory:
+            settings_file = Path(directory) / "settings.json"
+            with patch.object(backups, "SETTINGS_FILE", settings_file):
+                backups.save_settings({
+                    "enabled": True,
+                    "interval_hours": 12,
+                    "target": "webdav",
+                    "webdav_url": "https://cloud.example.test/dav",
+                    "webdav_username": "admin",
+                    "webdav_password": "secret",
+                    "webdav_path": "dockpilot",
+                })
+                public = backups.load_settings()
+                private = backups.load_settings(include_password=True)
+                self.assertNotIn("webdav_password", public)
+                self.assertTrue(public["webdav_password_set"])
+                self.assertEqual(private["webdav_password"], "secret")
+
+    def test_backup_rejects_parent_path(self):
+        with self.assertRaises(ValueError):
+            backups._safe_relative("../outside")
+
+    def test_backup_creates_tar_and_manifest(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            container = MagicMock()
+            container.id = "container-full-id"
+            container.short_id = "abc123"
+            container.name = "web"
+            container.attrs = {
+                "Config": {"Image": "nginx:alpine", "Env": []},
+                "HostConfig": {},
+                "Mounts": [],
+            }
+            image = MagicMock()
+            image.id = "image-id"
+            image.tags = ["dockpilot-backup/web:test"]
+            image.save.return_value = iter([b"docker-", b"archive"])
+            container.commit.return_value = image
+            docker_client = MagicMock()
+            docker_client.containers.list.return_value = [container]
+            with (
+                patch.object(backups, "BACKUP_DIR", root / "backups"),
+                patch.object(backups, "SETTINGS_FILE", root / "settings.json"),
+                patch.object(backups, "HISTORY_FILE", root / "history.json"),
+            ):
+                result = backups.run_backup(docker_client, ["abc123"])
+                self.assertEqual(result["status"], "completed")
+                self.assertEqual(len(list((root / "backups").glob("*.tar"))), 1)
+                self.assertEqual(len(list((root / "backups").glob("*.json"))), 1)
+                container.commit.assert_called_once()
+                docker_client.images.remove.assert_called_once_with("image-id", force=True)
 
 
 if __name__ == "__main__":
