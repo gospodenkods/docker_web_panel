@@ -473,7 +473,7 @@ def networks(_: str = Depends(verify_token)):
                 "scope": n.attrs.get("Scope"),
                 "internal": n.attrs.get("Internal"),
                 "attachable": n.attrs.get("Attachable"),
-                "subnets": n.attrs.get("IPAM", {}).get("Config", []),
+                "subnets": (n.attrs.get("IPAM") or {}).get("Config") or [],
                 "containers": list((n.attrs.get("Containers") or {}).values())
             })
         return result
