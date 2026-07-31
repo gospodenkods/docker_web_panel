@@ -152,6 +152,50 @@ class CoreTests(unittest.TestCase):
         self.assertEqual(result[0]["subnets"], [])
         self.assertEqual(result[0]["containers"], [])
 
+    @patch("app.main.client")
+    def test_update_network_rejects_attached_containers(self, mocked_client):
+        network = mocked_client.return_value.networks.get.return_value
+        network.name = "app-net"
+        network.attrs = {"Containers": {"container-id": {"Name": "web"}}}
+        data = main.NetworkUpdate(name="app-net", subnet="172.30.0.0/16")
+        with self.assertRaises(main.HTTPException) as ctx:
+            main.update_network("net1", data, "admin")
+        self.assertEqual(ctx.exception.status_code, 409)
+        network.remove.assert_not_called()
+
+    @patch("app.main.client")
+    def test_update_network_recreates_unused_network(self, mocked_client):
+        c = mocked_client.return_value
+        network = c.networks.get.return_value
+        network.name = "app-net"
+        network.attrs = {
+            "Containers": {},
+            "Labels": {"project": "app"},
+            "Options": {},
+            "EnableIPv6": False,
+            "Driver": "bridge",
+            "Internal": False,
+            "Attachable": True,
+            "IPAM": {"Config": [{"Subnet": "172.30.0.0/16", "Gateway": "172.30.0.1"}]},
+        }
+        recreated = MagicMock(short_id="new1")
+        recreated.name = "app-net-new"
+        c.networks.create.return_value = recreated
+        data = main.NetworkUpdate(
+            name="app-net-new",
+            subnet="172.31.0.0/16",
+            gateway="172.31.0.1",
+            attachable=True,
+        )
+        result = main.update_network("net1", data, "admin")
+        network.remove.assert_called_once()
+        self.assertEqual(result, {"ok": True, "id": "new1", "name": "app-net-new"})
+        self.assertEqual(c.networks.create.call_args.args[0], "app-net-new")
+
+    def test_network_gateway_requires_subnet(self):
+        with self.assertRaises(Exception):
+            main.NetworkUpdate(name="app-net", gateway="172.30.0.1")
+
     def test_api_error_preserves_http_exception(self):
         original = main.HTTPException(409, "conflict")
         with self.assertRaises(main.HTTPException) as ctx:
