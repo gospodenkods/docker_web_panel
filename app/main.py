@@ -134,6 +134,15 @@ class NetworkCreate(BaseModel):
     subnet: str | None = None
     gateway: str | None = None
 
+    @model_validator(mode="after")
+    def validate_ipam(self):
+        if self.gateway and not self.subnet:
+            raise ValueError("gateway можно указать только вместе с subnet")
+        return self
+
+class NetworkUpdate(NetworkCreate):
+    pass
+
 class NetworkConnect(BaseModel):
     container: str = Field(min_length=1, max_length=128)
 
@@ -494,6 +503,67 @@ def create_network(data: NetworkCreate, _: str = Depends(verify_token)):
             labels={"dockpilot.managed": "true"}
         )
         return {"ok": True, "id": n.short_id}
+    except Exception as exc:
+        api_error(exc)
+
+@app.put("/api/networks/{network_id}")
+def update_network(network_id: str, data: NetworkUpdate, _: str = Depends(verify_token)):
+    c = client()
+    try:
+        network = c.networks.get(network_id)
+        network.reload()
+        if network.name in {"bridge", "host", "none"}:
+            raise HTTPException(409, "Системные сети Docker нельзя пересоздавать из панели")
+        attached = network.attrs.get("Containers") or {}
+        if attached:
+            raise HTTPException(
+                409,
+                "Сначала отключите все контейнеры от сети. Изменение конфигурации требует пересоздания сети.",
+            )
+        labels = network.attrs.get("Labels") or {"dockpilot.managed": "true"}
+        options = network.attrs.get("Options") or None
+        enable_ipv6 = bool(network.attrs.get("EnableIPv6"))
+        original_ipam_configs = (network.attrs.get("IPAM") or {}).get("Config") or []
+        original_pools = [
+            docker.types.IPAMPool(
+                subnet=config.get("Subnet"),
+                gateway=config.get("Gateway"),
+                iprange=config.get("IPRange"),
+                aux_addresses=config.get("AuxiliaryAddresses"),
+            )
+            for config in original_ipam_configs
+            if config.get("Subnet")
+        ]
+        original_kwargs = {
+            "driver": network.attrs.get("Driver") or "bridge",
+            "internal": bool(network.attrs.get("Internal")),
+            "attachable": bool(network.attrs.get("Attachable")),
+            "enable_ipv6": enable_ipv6,
+            "ipam": docker.types.IPAMConfig(pool_configs=original_pools) if original_pools else None,
+            "options": options,
+            "labels": labels,
+        }
+        original_name = network.name
+        network.remove()
+        ipam = None
+        if data.subnet:
+            pool = docker.types.IPAMPool(subnet=data.subnet, gateway=data.gateway)
+            ipam = docker.types.IPAMConfig(pool_configs=[pool])
+        try:
+            recreated = c.networks.create(
+                data.name,
+                driver=data.driver,
+                internal=data.internal,
+                attachable=data.attachable,
+                enable_ipv6=enable_ipv6,
+                ipam=ipam,
+                options=options,
+                labels=labels,
+            )
+        except Exception:
+            c.networks.create(original_name, **original_kwargs)
+            raise
+        return {"ok": True, "id": recreated.short_id, "name": recreated.name}
     except Exception as exc:
         api_error(exc)
 
