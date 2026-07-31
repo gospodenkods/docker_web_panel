@@ -136,6 +136,22 @@ class CoreTests(unittest.TestCase):
         with self.assertRaises(Exception):
             main.NetworkCreate(name="testnet", driver="overlay")
 
+    @patch("app.main.client")
+    def test_networks_normalize_null_ipam_config(self, mocked_client):
+        network = MagicMock(short_id="net1", name="bridge")
+        network.attrs = {
+            "Driver": "bridge",
+            "Scope": "local",
+            "Internal": False,
+            "Attachable": False,
+            "IPAM": {"Config": None},
+            "Containers": None,
+        }
+        mocked_client.return_value.networks.list.return_value = [network]
+        result = main.networks("admin")
+        self.assertEqual(result[0]["subnets"], [])
+        self.assertEqual(result[0]["containers"], [])
+
     def test_api_error_preserves_http_exception(self):
         original = main.HTTPException(409, "conflict")
         with self.assertRaises(main.HTTPException) as ctx:
